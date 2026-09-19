@@ -6,10 +6,11 @@ Telegram-бот "Скидки и промокоды"
 - показывает пользователю меню категорий (одежда, электроника, красота и т.д.)
 - по нажатию на категорию присылает список актуальных скидок с твоими партнёрскими ссылками
 - у тебя (админа) есть команды, чтобы добавлять/удалять скидки без изменения кода
+- считает подписчиков и показывает статистику по команде /stats (только для админа)
 
 Установка (один раз):
 1. Установи Python 3.10+
-2. В терминале: pip install python-telegram-bot==21.4
+2. В терминале: pip install python-telegram-bot==22.8
 3. Получи токен бота у @BotFather в Telegram (команда /newbot)
 4. Узнай свой Telegram ID у бота @userinfobot — это нужно, чтобы только ты
    мог добавлять/удалять скидки
@@ -18,7 +19,8 @@ Telegram-бот "Скидки и промокоды"
 
 Хранилище данных:
 Все скидки хранятся в файле discounts.json рядом со скриптом.
-Файл создастся автоматически при первом запуске.
+Все подписчики хранятся в файле users.json рядом со скриптом.
+Файлы создадутся автоматически при первом запуске.
 """
 
 import json
@@ -43,6 +45,7 @@ BOT_TOKEN = "8818209026:AAFttlEh8vHWNSoWTVPmAlXgK2l8hxVZ-BM"
 ADMIN_IDS = [6708840511]  # замени на свой ID
 
 DATA_FILE = "discounts.json"
+USERS_FILE = "users.json"
 
 CATEGORIES = ["Одежда", "Электроника", "Красота", "Дом и быт", "Путешествия"]
 
@@ -69,6 +72,33 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        save_users([])
+        return []
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+
+def register_user(user_id: int, username: str, first_name: str):
+    """Сохраняет пользователя в базу, если его там ещё нет."""
+    users = load_users()
+    for u in users:
+        if u["id"] == user_id:
+            return  # уже есть
+    users.append({
+        "id": user_id,
+        "username": username or "",
+        "first_name": first_name or "",
+    })
+    save_users(users)
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -76,6 +106,9 @@ def is_admin(user_id: int) -> bool:
 # ---------------- Команды пользователя ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    register_user(user.id, user.username, user.first_name)
+
     keyboard = [
         [InlineKeyboardButton(cat, callback_data=f"cat:{cat}")]
         for cat in CATEGORIES
@@ -193,10 +226,104 @@ async def remove_discount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Не нашёл такую скидку. Проверь /list.")
 
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает количество подписчиков бота (только для админа)."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
+
+    users = load_users()
+    total = len(users)
+
+    if total == 0:
+        await update.message.reply_text("Пока ни одного подписчика.")
+        return
+
+    lines = [f"👥 Всего подписчиков: {total}\n"]
+    lines.append("Последние 10:")
+    for u in users[-10:]:
+        name = u.get("username") or u.get("first_name") or str(u["id"])
+        lines.append(f"• {name} (ID: {u['id']})")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def search_discounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Поиск скидок по ключевому слову.
+    Использование: /search наушники
+    """
+    query_text = " ".join(context.args).strip().lower()
+    if not query_text:
+        await update.message.reply_text(
+            "Напиши, что ищешь. Пример:\n/search наушники"
+        )
+        return
+
+    data = load_data()
+    found = []
+    for category, items in data.items():
+        for item in items:
+            if query_text in item["title"].lower():
+                found.append((category, item))
+
+    if not found:
+        await update.message.reply_text(
+            f"По запросу «{query_text}» ничего не нашлось. Попробуй другое слово."
+        )
+        return
+
+    lines = [f"🔍 Результаты по запросу «{query_text}»:\n"]
+    for category, item in found:
+        lines.append(f"• [{category}] {item['title']}\n  {item['link']}\n")
+
+    await update.message.reply_text(
+        "\n".join(lines), disable_web_page_preview=True
+    )
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Рассылка сообщения всем подписчикам (только для админа).
+    Использование: /broadcast Текст сообщения
+    """
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
+
+    text = update.message.text.partition(" ")[2].strip()
+    if not text:
+        await update.message.reply_text(
+            "Напиши текст рассылки после команды.\nПример:\n/broadcast Новые скидки уже в боте!"
+        )
+        return
+
+    users = load_users()
+    if not users:
+        await update.message.reply_text("Пока нет ни одного подписчика для рассылки.")
+        return
+
+    await update.message.reply_text(f"Начинаю рассылку для {len(users)} человек...")
+
+    sent = 0
+    failed = 0
+    for u in users:
+        try:
+            await context.bot.send_message(chat_id=u["id"], text=text)
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(
+        f"Рассылка завершена.\nДоставлено: {sent}\nНе доставлено: {failed}"
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Команды:\n"
         "/start — открыть меню категорий\n"
+        "/search слово — найти скидку по названию\n"
     )
     if is_admin(update.effective_user.id):
         text += (
@@ -204,6 +331,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/add Категория | Название | Ссылка — добавить скидку\n"
             "/list — посмотреть все скидки с номерами\n"
             "/remove Категория:номер — удалить скидку\n"
+            "/stats — посмотреть число подписчиков\n"
+            "/broadcast Текст — разослать сообщение всем подписчикам\n"
         )
     await update.message.reply_text(text)
 
@@ -220,6 +349,9 @@ def main():
     app.add_handler(CommandHandler("add", add_discount))
     app.add_handler(CommandHandler("list", list_discounts))
     app.add_handler(CommandHandler("remove", remove_discount))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("search", search_discounts))
+    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CallbackQueryHandler(show_category, pattern=r"^cat:"))
 
     print("Бот запущен. Останови через Ctrl+C.")
