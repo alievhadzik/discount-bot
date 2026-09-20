@@ -38,8 +38,9 @@ from telegram.ext import (
 
 # ============ НАСТРОЙКИ (заполни перед запуском) ============
 
-BOT_TOKEN = "8818209026:AAFttlEh8vHWNSoWTVPmAlXgK2l8hxVZ-BM"
-
+from dotenv import load_dotenv
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Telegram ID пользователей, которым разрешено добавлять/удалять скидки.
 # Узнать свой ID можно у бота @userinfobot
 ADMIN_IDS = [6708840511]  # замени на свой ID
